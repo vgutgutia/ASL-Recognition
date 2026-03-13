@@ -1,0 +1,5 @@
+data/
+# keep asl_model_best.pth tracked
+__pycache__/
+.DS_Store
+*.pyc
