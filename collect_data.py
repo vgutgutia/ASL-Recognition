@@ -1,44 +1,38 @@
-"""
-ASL Data Collection — 30 per letter
-=====================================
-150 total. Press SPACE to capture, S to skip letter, Q to quit.
-"""
+# collect_data.py - captures webcam images for ASL dataset
+# press SPACE to capture, S to skip a letter, Q to quit
 
 import cv2
 import os
 from datetime import datetime
 
 LETTERS = ["A", "B", "C", "D", "E"]
-IMAGES_PER_LETTER = 15
-BOX_SIZE = 250
+IMAGES_PER_LETTER = 10
+BOX_SIZE = 400
 IMG_SIZE = 300
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
 
 
-def overlay_text(frame, lines, start_y=30, color=(0, 255, 0), scale=0.7, thickness=2):
+def put_text(frame, lines, start_y=30, color=(0, 255, 0), scale=0.7, thickness=2):
+    """draw text with a dark shadow behind it so its readable"""
     for i, line in enumerate(lines):
         y = start_y + i * 35
         cv2.putText(frame, line, (12, y + 2), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 2)
         cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
 
 
-def get_box_coords(frame):
+def get_box(frame):
+    """returns the coords of the center crop box"""
     h, w = frame.shape[:2]
     cx, cy = w // 2, h // 2
     half = BOX_SIZE // 2
     return cx - half, cy - half, cx + half, cy + half
 
 
-def draw_center_box(frame):
-    x1, y1, x2, y2 = get_box_coords(frame)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-
-
 def main():
     for letter in LETTERS:
         os.makedirs(os.path.join(DATA_DIR, letter), exist_ok=True)
 
-    # Camera selection
+    # find available cameras (macOS sometimes picks the wrong one)
     print("\n  Scanning for cameras...")
     available = []
     for idx in range(5):
@@ -51,7 +45,7 @@ def main():
             test.release()
 
     if not available:
-        print("ERROR: No cameras found.")
+        print("No cameras found!")
         return
 
     if len(available) == 1:
@@ -83,7 +77,7 @@ def main():
         captured = 0
         flash_timer = 0
 
-        # "Get ready" screen
+        # show a "get ready" screen for each letter
         for _ in range(90):
             ret, frame = cap.read()
             if not ret:
@@ -92,11 +86,11 @@ def main():
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 0), -1)
             frame = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
-            overlay_text(frame, [
-                f"GET READY — Letter {letter}",
+            put_text(frame, [
+                f"GET READY - Letter {letter}",
                 f"",
                 f"Show the ASL sign for '{letter}' with your hand",
-                f"Take {IMAGES_PER_LETTER} photos — vary lighting, hand, background",
+                f"Take {IMAGES_PER_LETTER} photos - vary lighting, hand, background",
                 f"Press SPACE to start",
             ], start_y=80, color=(0, 200, 255), scale=0.75)
             cv2.imshow("ASL Data Collection", frame)
@@ -110,7 +104,7 @@ def main():
         if quit_early:
             break
 
-        # Capture loop
+        # main capture loop for this letter
         while captured < IMAGES_PER_LETTER:
             ret, frame = cap.read()
             if not ret:
@@ -118,18 +112,21 @@ def main():
             frame = cv2.flip(frame, 1)
             display = frame.copy()
 
-            draw_center_box(display)
+            # draw the guide box
+            x1, y1, x2, y2 = get_box(display)
+            cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
-            overlay_text(display, [
-                f"Letter {letter}  —  {captured}/{IMAGES_PER_LETTER}    [SPACE=capture  S=skip  Q=quit]",
+            put_text(display, [
+                f"Letter {letter}  -  {captured}/{IMAGES_PER_LETTER}    [SPACE=capture  S=skip  Q=quit]",
             ], start_y=25, scale=0.55, thickness=1)
 
-            # Progress bar
+            # progress bar at the bottom
             bar_y = display.shape[0] - 40
             cv2.rectangle(display, (10, bar_y), (310, bar_y + 20), (255, 255, 255), 2)
             fill = int(296 * captured / IMAGES_PER_LETTER)
             cv2.rectangle(display, (12, bar_y + 2), (12 + fill, bar_y + 18), (0, 255, 0), -1)
 
+            # flash effect after capturing
             if flash_timer > 0:
                 alpha = flash_timer / 8.0
                 white = display.copy()
@@ -141,7 +138,8 @@ def main():
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord(' '):
-                x1, y1, x2, y2 = get_box_coords(frame)
+                # crop from the box region, not the full frame
+                x1, y1, x2, y2 = get_box(frame)
                 cropped = frame[y1:y2, x1:x2]
                 resized = cv2.resize(cropped, (IMG_SIZE, IMG_SIZE))
 

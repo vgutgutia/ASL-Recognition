@@ -1,13 +1,6 @@
-"""
-ASL Recognition — Evaluation on Secret Test Dataset
-=====================================================
-Loads the trained model and evaluates on the teacher's test data.
-
-Usage:  python3 evaluate.py <path_to_test_folder>
-
-The test folder should have subfolders: A/ B/ C/ D/ E/
-each containing 300x300 images.
-"""
+# evaluate.py - run the trained model on the secret test dataset
+# usage: python3 evaluate.py <path_to_test_folder>
+# test folder should have subfolders A/ B/ C/ D/ E/ with images
 
 import sys
 import os
@@ -21,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ── Model Definition ───────────────────────────────────────────
+
 class DepthwiseSeparable(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -71,7 +64,6 @@ class ASLNet(nn.Module):
         return self.classifier(x)
 
 
-# ── Config ─────────────────────────────────────────────────────
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "asl_model_best.pth")
 DEVICE = (
     "mps" if torch.backends.mps.is_available()
@@ -83,15 +75,14 @@ DEVICE = (
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 evaluate.py <path_to_test_folder>")
-        print("  The test folder should contain subfolders: A/ B/ C/ D/ E/")
         return
 
     test_dir = sys.argv[1]
     if not os.path.isdir(test_dir):
-        print(f"ERROR: {test_dir} is not a valid directory")
+        print(f"Error: {test_dir} is not a valid directory")
         return
 
-    # Load model
+    # load model
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
     class_names = checkpoint["class_names"]
     img_size = checkpoint["img_size"]
@@ -100,18 +91,10 @@ def main():
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    print("=" * 60)
-    print("  ASL Recognition — Secret Dataset Evaluation")
-    print("=" * 60)
-    print(f"  Model     : {MODEL_PATH}")
-    print(f"  Params    : {checkpoint['total_params']:,}")
-    print(f"  Train F1  : {checkpoint['best_f1']:.4f}")
-    print(f"  Device    : {DEVICE}")
-    print(f"  Test dir  : {test_dir}")
-    print(f"  Img size  : {img_size}x{img_size}")
-    print(f"  Classes   : {class_names}")
+    print(f"Model: {checkpoint['total_params']:,} params, train F1={checkpoint['best_f1']:.4f}")
+    print(f"Device: {DEVICE}, img size: {img_size}x{img_size}")
 
-    # Preprocessing — matches training val_transform
+    # preprocessing (same as training validation)
     test_transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
@@ -120,12 +103,9 @@ def main():
 
     test_dataset = datasets.ImageFolder(test_dir, transform=test_transform)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=0)
+    print(f"Test images: {len(test_dataset)}, classes: {test_dataset.classes}")
 
-    print(f"  Images    : {len(test_dataset)}")
-    print(f"  Detected  : {test_dataset.classes}")
-    print("=" * 60)
-
-    # Run inference
+    # run inference with test-time augmentation (average original + flipped)
     all_preds = []
     all_labels = []
     correct = 0
@@ -134,8 +114,11 @@ def main():
     with torch.no_grad():
         for images, labels in test_loader:
             images, labels = images.to(DEVICE), labels.to(DEVICE)
-            outputs = model(images)
-            preds = outputs.argmax(1)
+            # TTA: average predictions from original and horizontally flipped
+            probs_orig = torch.softmax(model(images), dim=1)
+            probs_flip = torch.softmax(model(torch.flip(images, dims=[3])), dim=1)
+            probs = (probs_orig + probs_flip) / 2
+            preds = probs.argmax(1)
             correct += (preds == labels).sum().item()
             total += labels.size(0)
             all_preds.extend(preds.cpu().numpy())
@@ -147,39 +130,26 @@ def main():
                                    target_names=test_dataset.classes, zero_division=0)
     cm = confusion_matrix(all_labels, all_preds)
 
-    # Results
-    print(f"\n{'=' * 60}")
-    print(f"  RESULTS ON SECRET DATASET")
-    print(f"{'=' * 60}")
-    print(f"  Top-1 Accuracy : {accuracy:.4f}  ({accuracy * 100:.1f}%)")
-    print(f"  F1 Score       : {f1:.4f}")
-    print(f"  Parameters     : {checkpoint['total_params']:,}")
+    print(f"\nAccuracy: {accuracy:.4f} ({accuracy * 100:.1f}%)")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"Params: {checkpoint['total_params']:,}")
     print(f"\n{report}")
 
-    # Competition scoring
+    # competition scoring
     acc_pts = accuracy * 100 * 0.20
     f1_pts = f1 * 30
     param_pts = 20 if checkpoint['total_params'] < 1_000_000 else (10 if checkpoint['total_params'] < 10_000_000 else 0)
+    print(f"Competition score: {acc_pts:.1f} + {f1_pts:.1f} + {param_pts} = {acc_pts + f1_pts + param_pts:.1f} / 70")
 
-    print(f"{'=' * 60}")
-    print(f"  COMPETITION SCORE")
-    print(f"{'=' * 60}")
-    print(f"  Accuracy pts  : {acc_pts:.1f} / 20")
-    print(f"  F1 pts        : {f1_pts:.1f} / 30")
-    print(f"  Param pts     : {param_pts} / 20")
-    print(f"  TOTAL         : {acc_pts + f1_pts + param_pts:.1f} / 70")
-    print(f"{'=' * 60}")
-
-    # Save confusion matrix
+    # save confusion matrix
     output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-    ax.set_title("Confusion Matrix — Secret Dataset")
+    ax.set_title("Confusion Matrix - Test Set")
     plt.colorbar(im, ax=ax)
-    tick_marks = range(len(test_dataset.classes))
-    ax.set_xticks(tick_marks)
+    ax.set_xticks(range(len(test_dataset.classes)))
     ax.set_xticklabels(test_dataset.classes)
-    ax.set_yticks(tick_marks)
+    ax.set_yticks(range(len(test_dataset.classes)))
     ax.set_yticklabels(test_dataset.classes)
     for i in range(len(test_dataset.classes)):
         for j in range(len(test_dataset.classes)):
@@ -190,7 +160,7 @@ def main():
     plt.tight_layout()
     save_path = os.path.join(output_dir, "confusion_matrix_test.png")
     plt.savefig(save_path, dpi=150)
-    print(f"\n  Confusion matrix saved to {save_path}")
+    print(f"\nConfusion matrix saved to {save_path}")
 
 
 if __name__ == "__main__":

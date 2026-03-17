@@ -1,87 +1,87 @@
-# ASL Letter Recognition CNN — Project Report
+# ASL Letter Recognition CNN - Report
 
 ## 1. Data Collection Strategy
 
-We collected images using a Python script with OpenCV that captures frames from a webcam. Images are cropped from a 250x250 pixel guide box centered on the screen, ensuring the hand fills most of the frame. Each image is saved as a 300x300 JPEG into labeled folders (`A/`, `B/`, `C/`, `D/`, `E/`).
+We built a Python script (`collect_data.py`) that uses OpenCV to capture images from a webcam. A yellow guide box is drawn on screen, and images are cropped from that box region so the hand fills most of the frame. Each captured image is saved as a 300x300 JPEG into labeled folders (A/, B/, C/, D/, E/).
 
-**Raw dataset**: 840 images total (A: 210, B: 150, C: 150, D: 150, E: 180)
+We collected a total of 890 raw images across multiple sessions:
+- A: 220, B: 160, C: 160, D: 160, E: 190
 
-To ensure diversity, we varied:
-- **Lighting**: bright, dim, and natural light
-- **Background**: plain walls, cluttered desks, dark backgrounds
-- **Hand**: both left and right hands
-- **Orientation**: different angles and distances from the camera
+To make the dataset more diverse, we varied lighting (bright, dim, natural), background (plain walls, cluttered desk, dark), used both left and right hands, and tried different angles/distances from the camera. We also captured a set with the hand farther away to make the model more robust.
 
-We then applied offline augmentation (4 variants per image) to expand the dataset to **4,200 images**. Augmentations include random horizontal flips, rotation (up to 20 degrees), translation, zoom, brightness/contrast changes, Gaussian blur, and additive noise.
+We then ran offline augmentation (`augment.py`) to generate 4 variants per image, expanding the dataset to 4,450 images. Each augmented image gets a random combination of: horizontal flip, rotation (up to 20 degrees), translation, zoom, brightness/contrast changes, Gaussian blur, and additive noise.
 
-During training, additional on-the-fly augmentations are applied: random perspective warping, color jitter, Gaussian blur, and random erasing.
+During training, we also apply lighter on-the-fly augmentation: random flips, rotation, color jitter, and random erasing.
 
 ## 2. Model Architecture
 
-We designed a lightweight CNN using **depthwise separable convolutions** to keep the parameter count low while maintaining strong feature extraction. The architecture includes a residual (skip) connection in Block 3.
+Our model (ASLNet) uses depthwise separable convolutions to keep the parameter count low. Instead of using a regular convolution that processes all channels at once, depthwise separable convs split this into two steps: a 3x3 convolution applied independently to each channel (depthwise), followed by a 1x1 convolution that mixes channels (pointwise). This reduces parameters by roughly 8-9x compared to standard convolutions.
 
-| Layer | Type | Input Channels | Output Channels | Kernel | Stride | Padding | Pooling |
-|-------|------|---------------|-----------------|--------|--------|---------|---------|
-| Block 1 | Standard Conv2d + BatchNorm + ReLU | 3 (RGB) | 64 | 3x3 | 1 | 1 | MaxPool 2x2 |
-| Block 2 | Depthwise Separable Conv | 64 | 128 | 3x3 (dw) + 1x1 (pw) | 1 | 1 | MaxPool 2x2 |
-| Block 3 | Depthwise Separable Conv + Residual Skip | 128 | 256 | 3x3 (dw) + 1x1 (pw) | 1 | 1 | MaxPool 2x2 |
-| Block 4 | Depthwise Separable Conv | 256 | 512 | 3x3 (dw) + 1x1 (pw) | 1 | 1 | AdaptiveAvgPool to 1x1 |
-| Classifier | Dropout (0.4) + Fully Connected | 512 | 5 | — | — | — | — |
+The architecture has 4 blocks:
 
-**Design choices**:
-- **Depthwise separable convolutions**: Each conv is split into a depthwise 3x3 convolution (processes each channel independently) followed by a 1x1 pointwise convolution (mixes channels). This reduces parameters by ~8-9x compared to standard convolutions.
-- **Residual connection in Block 3**: The skip connection (1x1 conv from 128 to 256 channels) helps gradients flow during training, improving convergence.
-- **BatchNorm after every conv layer**: Stabilizes training and allows higher learning rates.
-- **AdaptiveAvgPool**: Replaces flattening with global average pooling, reducing overfitting.
-- **Dropout (40%)**: Applied before the final linear layer to prevent overfitting on our relatively small dataset.
+| Block | Type | Channels | Kernel | Pooling | Details |
+|-------|------|----------|--------|---------|---------|
+| 1 | Standard Conv2d + BatchNorm + ReLU | 3 -> 64 | 3x3, stride 1, pad 1 | MaxPool 2x2 | Regular conv for initial feature extraction |
+| 2 | Depthwise Separable | 64 -> 128 | 3x3 (dw) + 1x1 (pw), stride 1, pad 1 | MaxPool 2x2 | |
+| 3 | Depthwise Separable + Residual Skip | 128 -> 256 | 3x3 (dw) + 1x1 (pw), stride 1, pad 1 | MaxPool 2x2 | Skip connection uses 1x1 conv to match dimensions |
+| 4 | Depthwise Separable | 256 -> 512 | 3x3 (dw) + 1x1 (pw), stride 1, pad 1 | AdaptiveAvgPool to 1x1 | Global average pooling instead of flattening |
 
-**Total parameters**: 215,557 (well under the 1M threshold for full competition points)
+The classifier is a single fully connected layer (512 -> 5) with 40% dropout before it.
+
+Block 3 has a residual (skip) connection: the input is passed through both the main depthwise separable path and a 1x1 convolution shortcut, and the outputs are added together. This helps gradients flow during training and improves convergence.
+
+We use BatchNorm after every convolution layer to stabilize training. AdaptiveAvgPool in block 4 replaces the typical flatten operation, which reduces overfitting by collapsing spatial dimensions to 1x1 before the classifier.
+
+**Total parameters: 215,557** (well under 1M)
 
 ## 3. Training Approach and Hyperparameters
 
-| Hyperparameter | Value |
-|----------------|-------|
+| Setting | Value |
+|---------|-------|
 | Input size | 128x128 RGB |
 | Batch size | 64 |
 | Optimizer | AdamW (weight decay = 1e-4) |
 | Learning rate | 3e-3 |
-| LR schedule | Cosine annealing (eta_min = 1e-6) |
+| LR schedule | Cosine annealing (min lr = 1e-6) |
 | Loss function | Cross-entropy with label smoothing (0.1) |
-| Epochs | 40 (with early stopping, patience = 12) |
-| Train/Val split | 80% / 20% (seed = 42) |
+| Epochs | 40 max (early stopping, patience = 12) |
+| Train/Val split | 80/20 (seed = 42) |
 
-**Preprocessing pipeline**:
-1. Resize all images to 128x128
-2. Convert to tensor (pixel values 0-1)
-3. Normalize with ImageNet mean/std ([0.485, 0.456, 0.406] / [0.229, 0.224, 0.225])
+Images are resized to 128x128 and normalized with ImageNet statistics (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]). We chose 128x128 over 224x224 because it trains significantly faster with minimal accuracy loss.
 
-Training was performed on Apple Silicon (M-series) GPU via PyTorch MPS backend.
+Label smoothing (0.1) prevents the model from becoming overconfident on training examples. Cosine annealing gradually reduces the learning rate from 3e-3 down to 1e-6, which helps fine-tune in later epochs.
+
+For evaluation, we use test-time augmentation (TTA): we predict on both the original image and a horizontally flipped version, then average the probabilities. This gives a small accuracy boost for free.
+
+Training was done on Apple Silicon GPU (MPS backend).
 
 ## 4. Results
 
-**Validation set performance (best model at epoch 39)**:
+Best model was saved at epoch 35 based on validation F1 score.
 
 | Metric | Score |
 |--------|-------|
-| Top-1 Accuracy | 96.8% |
-| Weighted F1 Score | 0.968 |
+| Top-1 Accuracy | 98.3% |
+| Weighted F1 | 0.983 |
 
-**Per-class performance**:
+Per-class breakdown:
 
-| Letter | Precision | Recall | F1 Score |
-|--------|-----------|--------|----------|
-| A | 0.99 | 0.98 | 0.98 |
-| B | 0.94 | 0.97 | 0.96 |
-| C | 0.95 | 0.99 | 0.97 |
-| D | 0.95 | 0.96 | 0.95 |
-| E | 0.99 | 0.95 | 0.97 |
+| Letter | Precision | Recall | F1 |
+|--------|-----------|--------|----|
+| A | 0.98 | 1.00 | 0.99 |
+| B | 1.00 | 0.97 | 0.98 |
+| C | 0.98 | 0.98 | 0.98 |
+| D | 0.96 | 0.98 | 0.97 |
+| E | 0.99 | 0.98 | 0.99 |
 
-**Estimated competition score**: 68.4 / 70
+## 5. Challenges
 
-## 5. Challenges Faced
+**A vs E confusion**: These two ASL signs look very similar - both are closed fists, differing only in thumb position. Early models struggled here. We fixed it by re-cropping all images to focus tightly on the hand (instead of capturing the full frame), and increasing model capacity from 56k to 216k parameters so it could learn the subtle difference.
 
-- **A vs. E confusion**: These two ASL signs are very similar (both closed fists, differing only in thumb position). We solved this by re-cropping all images to focus tightly on the hand and increasing model capacity from 56k to 216k parameters so the model could learn the subtle thumb difference.
-- **Camera selection**: macOS Continuity Camera would sometimes select an iPhone as the webcam instead of the built-in camera. We added a camera selection prompt to all scripts.
-- **NumPy version conflicts**: The Anaconda environment had NumPy 2.x incompatibilities with scikit-learn, matplotlib, and other packages. Required upgrading several dependencies.
-- **Training speed**: Initial runs at 224x224 resolution were too slow. We found 128x128 with a larger batch size (64) and higher learning rate (3e-3) gave faster convergence without sacrificing accuracy.
-- **Cropping mismatch**: The data collection script was initially cropping the full camera frame rather than the guide box region, making hands appear small. Re-cropping all images to the box region significantly improved model performance.
+**Camera selection on macOS**: macOS Continuity Camera would sometimes pick an iPhone as the webcam instead of the built-in camera. We added camera scanning and selection to all scripts.
+
+**Training speed**: Our first attempt at 224x224 resolution was way too slow - 20 minutes for 4 epochs. Dropping to 128x128 with a larger batch size (64) and higher learning rate (3e-3) solved this with no meaningful accuracy loss.
+
+**Cropping mismatch**: The data collection script was initially saving the full camera frame instead of cropping from the guide box, making hands appear small and far away. Re-cropping all existing images to the box region significantly improved model performance.
+
+**Package conflicts**: NumPy 2.x had compatibility issues with scikit-learn and other packages in our conda environment. Required downgrading to NumPy 1.26.4 and upgrading several other dependencies.

@@ -1,9 +1,6 @@
-"""
-ASL Live Detection Demo
-========================
-Opens your webcam and shows real-time predictions
-with a confidence bar for each letter.
-"""
+# live_demo.py - real-time ASL letter detection from webcam
+# shows confidence bars for each letter and the predicted sign
+# press Q to quit
 
 import cv2
 import torch
@@ -12,7 +9,7 @@ import numpy as np
 from torchvision import transforms
 import os
 
-# ── Import model class from train.py ──────────────────────────
+
 class DepthwiseSeparable(nn.Module):
     def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
@@ -47,7 +44,7 @@ class ASLNet(nn.Module):
         self.block4 = nn.Sequential(
             DepthwiseSeparable(256, 512),
             nn.AdaptiveAvgPool2d(1),
-         )
+        )
         self.classifier = nn.Sequential(
             nn.Dropout(0.4),
             nn.Linear(512, num_classes),
@@ -62,7 +59,6 @@ class ASLNet(nn.Module):
         return self.classifier(x)
 
 
-# ── Config ─────────────────────────────────────────────────────
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "asl_model_best.pth")
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -82,20 +78,18 @@ transform = transforms.Compose([
 ])
 
 
-def draw_confidence_bars(frame, probs, class_names, x=10, y_start=80, bar_w=200, bar_h=30):
+def draw_bars(frame, probs, class_names, x=10, y_start=80):
+    """draw confidence bars for each class"""
+    bar_w, bar_h = 200, 30
     for i, (name, prob) in enumerate(zip(class_names, probs)):
         y = y_start + i * (bar_h + 12)
         color = COLORS.get(name, (200, 200, 200))
         fill = int(bar_w * prob)
-
-        cv2.putText(frame, name, (x, y + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
+        cv2.putText(frame, name, (x, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         bx = x + 35
         cv2.rectangle(frame, (bx, y), (bx + bar_w, y + bar_h), (60, 60, 60), -1)
         cv2.rectangle(frame, (bx, y), (bx + fill, y + bar_h), color, -1)
         cv2.rectangle(frame, (bx, y), (bx + bar_w, y + bar_h), (200, 200, 200), 1)
-
         cv2.putText(frame, f"{prob * 100:.1f}%", (bx + bar_w + 10, y + 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
@@ -103,14 +97,13 @@ def draw_confidence_bars(frame, probs, class_names, x=10, y_start=80, bar_w=200,
 def main():
     checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
     class_names = checkpoint["class_names"]
-
     model = ASLNet(num_classes=checkpoint["num_classes"]).to(DEVICE)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-    print(f"  Model loaded ({checkpoint['total_params']:,} params, best F1={checkpoint['best_f1']:.3f})")
+    print(f"Loaded model: {checkpoint['total_params']:,} params, F1={checkpoint['best_f1']:.3f}")
 
-    # Camera selection
-    print("  Scanning for cameras...")
+    # camera selection
+    print("Scanning cameras...")
     available = []
     for idx in range(5):
         test = cv2.VideoCapture(idx)
@@ -118,22 +111,22 @@ def main():
             ret, frame = test.read()
             if ret:
                 h, w = frame.shape[:2]
-                available.append((idx, f"Camera {idx}  ({w}x{h})"))
+                available.append((idx, f"Camera {idx} ({w}x{h})"))
             test.release()
 
     if not available:
-        print("ERROR: No cameras found.")
+        print("No cameras found!")
         return
 
     if len(available) == 1:
         cam_idx = available[0][0]
     else:
-        print(f"  Found {len(available)} cameras:")
+        print(f"Found {len(available)} cameras:")
         for idx, desc in available:
-            print(f"    [{idx}] {desc}")
+            print(f"  [{idx}] {desc}")
         while True:
             try:
-                choice = int(input("  Pick a camera number: "))
+                choice = int(input("Pick camera: "))
                 if choice in [a[0] for a in available]:
                     cam_idx = choice
                     break
@@ -144,14 +137,8 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    if not cap.isOpened():
-        print("ERROR: Cannot open camera")
-        return
-
-    print("  Live demo running. Press Q to quit.")
-
+    # smooth predictions over last 5 frames to reduce jitter
     history = []
-    SMOOTH_N = 5
 
     while True:
         ret, frame = cap.read()
@@ -161,8 +148,7 @@ def main():
 
         h, w = frame.shape[:2]
         cx, cy = w // 2, h // 2
-        box_size = 250
-        half = box_size // 2
+        half = 125  # 250px box
         bx1, by1 = cx - half, cy - half
         bx2, by2 = cx + half, cy + half
 
@@ -175,24 +161,19 @@ def main():
             probs = torch.softmax(output, dim=1).cpu().numpy()[0]
 
         history.append(probs)
-        if len(history) > SMOOTH_N:
+        if len(history) > 5:
             history.pop(0)
         avg_probs = np.mean(history, axis=0)
 
-        predicted_idx = np.argmax(avg_probs)
-        predicted_letter = class_names[predicted_idx]
-        confidence = avg_probs[predicted_idx]
+        pred_idx = np.argmax(avg_probs)
+        letter = class_names[pred_idx]
+        conf = avg_probs[pred_idx]
 
-        color = COLORS.get(predicted_letter, (255, 255, 255))
+        color = COLORS.get(letter, (255, 255, 255))
         cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 3)
-
-        cv2.putText(frame, predicted_letter, (w - 120, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, color, 5)
-        cv2.putText(frame, f"{confidence * 100:.0f}%", (w - 120, 120),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        draw_confidence_bars(frame, avg_probs, class_names)
-
+        cv2.putText(frame, letter, (w - 120, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.5, color, 5)
+        cv2.putText(frame, f"{conf * 100:.0f}%", (w - 120, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        draw_bars(frame, avg_probs, class_names)
         cv2.putText(frame, "Place hand in box | Q to quit", (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
 
