@@ -15,23 +15,11 @@ During training, we also apply lighter on-the-fly augmentation: random flips, ro
 
 2. Model Architecture
 
-Our model (ASLNet) uses depthwise separable convolutions to keep the parameter count low. Instead of using a regular convolution that processes all channels at once, depthwise separable convs split this into two steps: a 3x3 convolution applied independently to each channel (depthwise), followed by a 1x1 convolution that mixes channels (pointwise). This reduces parameters by roughly 8-9x compared to standard convolutions.
+Our model has 7 convolution layers organized into 4 blocks, going from 3 channels (RGB) up to 512. Each block extracts more complex features from the image, and a 2x2 max pool after each block halves the image size. After the last block, the image is averaged down to a single value per channel, and a fully connected layer maps those 512 values to 5 class predictions.
 
-The architecture has 4 blocks:
+We use depthwise separable convolutions in blocks 2-4 to keep the parameter count low. Instead of one big convolution, these split the work into a per-channel 3x3 filter and a 1x1 mixing filter, cutting parameters by about 8x.
 
-Block 1: Standard Conv2d (3 -> 64 channels, 3x3 kernel, stride 1, padding 1) + BatchNorm + ReLU + MaxPool 2x2
-
-Block 2: Depthwise Separable Conv (64 -> 128 channels, 3x3 depthwise + 1x1 pointwise, stride 1, padding 1) + MaxPool 2x2
-
-Block 3: Depthwise Separable Conv (128 -> 256 channels, 3x3 depthwise + 1x1 pointwise, stride 1, padding 1) + Residual skip connection (1x1 conv to match dimensions) + MaxPool 2x2
-
-Block 4: Depthwise Separable Conv (256 -> 512 channels, 3x3 depthwise + 1x1 pointwise, stride 1, padding 1) + AdaptiveAvgPool to 1x1
-
-Classifier: Dropout (40%) + Fully Connected layer (512 -> 5 classes)
-
-Block 3 has a residual (skip) connection: the input is passed through both the main depthwise separable path and a 1x1 convolution shortcut, and the outputs are added together. This helps gradients flow during training and improves convergence.
-
-We use BatchNorm after every convolution layer to stabilize training. AdaptiveAvgPool in block 4 replaces the typical flatten operation, which reduces overfitting by collapsing spatial dimensions to 1x1 before the classifier.
+Block 3 also has a skip connection — the input gets added back to the output so the network can learn more easily. Every conv layer is followed by BatchNorm and ReLU. The classifier uses 40% dropout to prevent overfitting.
 
 Total parameters: 215,557 (well under 1M)
 
