@@ -16,15 +16,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # config
+COMBINED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "combined")
 AUG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "augmented")
 RAW_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
-DATA_DIR = AUG_DIR if os.path.isdir(AUG_DIR) and len(os.listdir(AUG_DIR)) > 0 else RAW_DIR
+DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else (AUG_DIR if os.path.isdir(AUG_DIR) and len(os.listdir(AUG_DIR)) > 0 else RAW_DIR)
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 IMG_SIZE = 128
 BATCH_SIZE = 64
-EPOCHS = 40
-LR = 3e-3
-PATIENCE = 12
+EPOCHS = 50
+LR = 2e-3
+PATIENCE = 15
 NUM_CLASSES = 5
 DEVICE = (
     "mps" if torch.backends.mps.is_available()
@@ -34,15 +35,18 @@ DEVICE = (
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# augmentation for training - keep it light since we already augmented offline
+# heavier augmentation for diverse data
 train_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+    transforms.RandomRotation(25),
+    transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.4, hue=0.1),
+    transforms.RandomAffine(degrees=0, translate=(0.15, 0.15), scale=(0.75, 1.25)),
+    transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
+    transforms.RandomGrayscale(p=0.1),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.15, scale=(0.02, 0.1)),
+    transforms.RandomErasing(p=0.2, scale=(0.02, 0.2)),
 ])
 
 val_transform = transforms.Compose([
