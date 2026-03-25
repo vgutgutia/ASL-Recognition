@@ -23,9 +23,9 @@ DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else RAW_DIR
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 IMG_SIZE = 224  # pretrained models expect 224x224
 BATCH_SIZE = 32
-EPOCHS = 30
-LR = 1e-4       # lower lr for fine-tuning pretrained weights
-PATIENCE = 10
+EPOCHS = 40
+LR = 1e-4
+PATIENCE = 12
 NUM_CLASSES = 5
 DEVICE = (
     "cuda" if torch.cuda.is_available()
@@ -35,21 +35,22 @@ DEVICE = (
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# heavy augmentation to handle diverse test images
-# the test data has classroom backgrounds, far away hands, gloves, different lighting
+# heavy augmentation to simulate test conditions:
+# hands far away, messy backgrounds, weird angles, different lighting
 train_transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop(IMG_SIZE),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(30),
-    transforms.ColorJitter(brightness=0.6, contrast=0.6, saturation=0.5, hue=0.15),
-    transforms.RandomAffine(degrees=0, translate=(0.2, 0.2), scale=(0.6, 1.4)),
-    transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
-    transforms.RandomGrayscale(p=0.15),
-    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+    transforms.RandomRotation(35),
+    transforms.ColorJitter(brightness=0.7, contrast=0.7, saturation=0.5, hue=0.2),
+    # aggressive zoom out to simulate far-away hands
+    transforms.RandomAffine(degrees=15, translate=(0.25, 0.25), scale=(0.4, 1.2)),
+    transforms.RandomPerspective(distortion_scale=0.4, p=0.5),
+    transforms.RandomGrayscale(p=0.2),
+    transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 3.0)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.25, scale=(0.02, 0.25)),
+    transforms.RandomErasing(p=0.3, scale=(0.05, 0.4)),
 ])
 
 val_transform = transforms.Compose([
