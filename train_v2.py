@@ -59,21 +59,21 @@ val_transform = transforms.Compose([
 
 
 def build_model():
-    # pretrained ResNet18 - already knows edges, textures, shapes, hands
-    model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    # pretrained EfficientNet-B3 — much better feature extraction than ResNet18
+    model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
 
-    # freeze early layers - they detect generic features
+    # freeze early layers
     for name, param in model.named_parameters():
-        if "layer3" not in name and "layer4" not in name and "fc" not in name:
+        if "features.6" not in name and "features.7" not in name and "features.8" not in name and "classifier" not in name:
             param.requires_grad = False
 
-    # replace the final classifier
-    model.fc = nn.Sequential(
+    # replace classifier (efficientnet-b3 has 1536 features)
+    model.classifier = nn.Sequential(
         nn.Dropout(0.5),
-        nn.Linear(512, 128),
+        nn.Linear(1536, 256),
         nn.ReLU(inplace=True),
         nn.Dropout(0.3),
-        nn.Linear(128, NUM_CLASSES),
+        nn.Linear(256, NUM_CLASSES),
     )
     return model
 
