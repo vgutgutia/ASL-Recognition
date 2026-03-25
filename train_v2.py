@@ -23,9 +23,9 @@ DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else RAW_DIR
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 IMG_SIZE = 224  # pretrained models expect 224x224
 BATCH_SIZE = 32
-EPOCHS = 40
+EPOCHS = 30
 LR = 1e-4
-PATIENCE = 12
+PATIENCE = 10
 NUM_CLASSES = 5
 DEVICE = (
     "cuda" if torch.cuda.is_available()
@@ -35,22 +35,20 @@ DEVICE = (
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# heavy augmentation to simulate test conditions:
-# hands far away, messy backgrounds, weird angles, different lighting
+# moderate augmentation
 train_transform = transforms.Compose([
     transforms.Resize((256, 256)),
     transforms.RandomCrop(IMG_SIZE),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(35),
-    transforms.ColorJitter(brightness=0.7, contrast=0.7, saturation=0.5, hue=0.2),
-    # aggressive zoom out to simulate far-away hands
-    transforms.RandomAffine(degrees=15, translate=(0.25, 0.25), scale=(0.4, 1.2)),
-    transforms.RandomPerspective(distortion_scale=0.4, p=0.5),
-    transforms.RandomGrayscale(p=0.2),
-    transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 3.0)),
+    transforms.RandomRotation(30),
+    transforms.ColorJitter(brightness=0.6, contrast=0.6, saturation=0.5, hue=0.15),
+    transforms.RandomAffine(degrees=0, translate=(0.2, 0.2), scale=(0.6, 1.4)),
+    transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
+    transforms.RandomGrayscale(p=0.15),
+    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.3, scale=(0.05, 0.4)),
+    transforms.RandomErasing(p=0.25, scale=(0.02, 0.25)),
 ])
 
 val_transform = transforms.Compose([
@@ -64,7 +62,10 @@ def build_model():
     # pretrained ResNet18 - already knows edges, textures, shapes, hands
     model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
 
-    # train all layers - we have enough data now
+    # freeze early layers - they detect generic features
+    for name, param in model.named_parameters():
+        if "layer3" not in name and "layer4" not in name and "fc" not in name:
+            param.requires_grad = False
 
     # replace the final classifier
     model.fc = nn.Sequential(
@@ -157,11 +158,11 @@ def main():
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # different lr for pretrained vs new layers
-    backbone_params = [p for n, p in model.named_parameters() if "fc" not in n]
+    pretrained_params = [p for n, p in model.named_parameters() if p.requires_grad and "fc" not in n]
     fc_params = [p for n, p in model.named_parameters() if "fc" in n]
     optimizer = optim.AdamW([
-        {"params": backbone_params, "lr": LR},
-        {"params": fc_params, "lr": LR * 10},
+        {"params": pretrained_params, "lr": LR * 0.5},
+        {"params": fc_params, "lr": LR * 5},
     ], weight_decay=1e-3)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-7)

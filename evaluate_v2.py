@@ -21,6 +21,8 @@ DEVICE = (
 )
 
 
+NUM_CLASSES = 5
+
 def build_model(num_classes=5):
     model = models.resnet18(weights=None)
     model.fc = nn.Sequential(
@@ -54,33 +56,41 @@ def main():
     print(f"Model: ResNet18, {checkpoint['total_params']:,} params, train F1={checkpoint['best_f1']:.4f}")
     print(f"Device: {DEVICE}, img size: {img_size}x{img_size}")
 
-    test_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    # multi-crop TTA transforms
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    tta_transforms = [
+        # original resize
+        transforms.Compose([transforms.Resize((img_size, img_size)), transforms.ToTensor(), normalize]),
+        # center crop
+        transforms.Compose([transforms.Resize((256, 256)), transforms.CenterCrop(img_size), transforms.ToTensor(), normalize]),
+        # 5-crop at different positions
+        transforms.Compose([transforms.Resize((280, 280)), transforms.CenterCrop(img_size), transforms.ToTensor(), normalize]),
+        # slightly zoomed out
+        transforms.Compose([transforms.Resize((200, 200)), transforms.Pad((12, 12, 12, 12)), transforms.ToTensor(), normalize]),
+    ]
 
-    test_dataset = datasets.ImageFolder(test_dir, transform=test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=0)
+    test_dataset = datasets.ImageFolder(test_dir)
     print(f"Test images: {len(test_dataset)}, classes: {test_dataset.classes}")
 
-    # TTA: original + flipped
     all_preds = []
     all_labels = []
     correct = 0
     total = 0
 
     with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(DEVICE), labels.to(DEVICE)
-            probs_orig = torch.softmax(model(images), dim=1)
-            probs_flip = torch.softmax(model(torch.flip(images, dims=[3])), dim=1)
-            probs = (probs_orig + probs_flip) / 2
-            preds = probs.argmax(1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+        for img, label in test_dataset:
+            probs_sum = torch.zeros(NUM_CLASSES).to(DEVICE)
+            for t in tta_transforms:
+                tensor = t(img).unsqueeze(0).to(DEVICE)
+                probs_sum += torch.softmax(model(tensor), dim=1).squeeze()
+                # also flip each
+                probs_sum += torch.softmax(model(torch.flip(tensor, dims=[3])), dim=1).squeeze()
+            pred = probs_sum.argmax().item()
+            if pred == label:
+                correct += 1
+            total += 1
+            all_preds.append(pred)
+            all_labels.append(label)
 
     accuracy = correct / total
     f1 = f1_score(all_labels, all_preds, average="weighted")
