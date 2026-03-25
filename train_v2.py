@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from collections import Counter
-import timm
+from torchvision import models
 
 # config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -91,16 +91,24 @@ val_transform = transforms.Compose([
 
 
 def build_model():
-    # ViT-Small - self-attention can focus on the hand in cluttered images
-    model = timm.create_model('vit_small_patch16_224', pretrained=True, num_classes=NUM_CLASSES)
-    # freeze early blocks, train last 4 + head
+    # ViT-B/16 from torchvision - self-attention focuses on hand in cluttered images
+    model = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
+    # freeze early encoder blocks, train last 4 + head
     for name, param in model.named_parameters():
-        if "blocks." in name:
-            block_num = int(name.split("blocks.")[1].split(".")[0])
-            if block_num < 8:  # freeze blocks 0-7, train 8-11
+        if "encoder.layers.encoder_layer_" in name:
+            block_num = int(name.split("encoder_layer_")[1].split(".")[0])
+            if block_num < 8:
                 param.requires_grad = False
-        elif "patch_embed" in name or "cls_token" in name or "pos_embed" in name:
+        elif "conv_proj" in name or "class_token" in name or "encoder.pos_embedding" in name:
             param.requires_grad = False
+    # replace head (vit_b_16 has 768 features)
+    model.heads = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(768, 256),
+        nn.ReLU(inplace=True),
+        nn.Dropout(0.3),
+        nn.Linear(256, NUM_CLASSES),
+    )
     return model
 
 
@@ -180,8 +188,8 @@ def main():
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # separate lr for pretrained blocks vs head
-    head_params = [p for n, p in model.named_parameters() if "head" in n]
-    backbone_params = [p for n, p in model.named_parameters() if p.requires_grad and "head" not in n]
+    head_params = [p for n, p in model.named_parameters() if "heads" in n]
+    backbone_params = [p for n, p in model.named_parameters() if p.requires_grad and "heads" not in n]
     optimizer = optim.AdamW([
         {"params": backbone_params, "lr": LR * 0.5},
         {"params": head_params, "lr": LR * 5},

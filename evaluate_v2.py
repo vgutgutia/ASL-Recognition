@@ -1,12 +1,12 @@
-# evaluate_v2.py - evaluate ViT model with TTA
+# evaluate_v2.py
 # usage: python3 evaluate_v2.py <path_to_test_folder>
 
 import sys
 import os
 import torch
-from torchvision import datasets, transforms
+import torch.nn as nn
+from torchvision import datasets, transforms, models
 from sklearn.metrics import f1_score, classification_report
-import timm
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "asl_model_best.pth")
 DEVICE = (
@@ -14,6 +14,18 @@ DEVICE = (
     else "mps" if torch.backends.mps.is_available()
     else "cpu"
 )
+
+
+def build_model(num_classes=5):
+    model = models.vit_b_16(weights=None)
+    model.heads = nn.Sequential(
+        nn.Dropout(0.5),
+        nn.Linear(768, 256),
+        nn.ReLU(inplace=True),
+        nn.Dropout(0.3),
+        nn.Linear(256, num_classes),
+    )
+    return model
 
 
 def main():
@@ -26,12 +38,11 @@ def main():
     class_names = checkpoint["class_names"]
     img_size = checkpoint["img_size"]
 
-    model = timm.create_model('vit_small_patch16_224', pretrained=False, num_classes=checkpoint["num_classes"])
+    model = build_model(num_classes=checkpoint["num_classes"]).to(DEVICE)
     model.load_state_dict(checkpoint["model_state_dict"])
-    model = model.to(DEVICE)
     model.eval()
 
-    print(f"Model: ViT-Small, train F1={checkpoint['best_f1']:.4f}")
+    print(f"Model: ViT-B/16, train F1={checkpoint['best_f1']:.4f}")
 
     test_transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
