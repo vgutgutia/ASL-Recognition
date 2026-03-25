@@ -26,7 +26,7 @@ BG_DIR = os.path.join(BASE_DIR, "data", "backgrounds")
 DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else RAW_DIR
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 IMG_SIZE = 224
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 EPOCHS = 30
 LR = 1e-4
 PATIENCE = 10
@@ -91,20 +91,20 @@ val_transform = transforms.Compose([
 
 
 def build_model():
-    # ViT-B/16 from torchvision - self-attention focuses on hand in cluttered images
-    model = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
-    # freeze early encoder blocks, train last 4 + head
+    # ViT-L/16 - largest ViT, best feature extraction for fine details like A vs E
+    model = models.vit_l_16(weights=models.ViT_L_16_Weights.IMAGENET1K_V1)
+    # freeze early encoder blocks (0-19), train last 4 (20-23) + head
     for name, param in model.named_parameters():
         if "encoder.layers.encoder_layer_" in name:
             block_num = int(name.split("encoder_layer_")[1].split(".")[0])
-            if block_num < 8:
+            if block_num < 20:
                 param.requires_grad = False
         elif "conv_proj" in name or "class_token" in name or "encoder.pos_embedding" in name:
             param.requires_grad = False
-    # replace head (vit_b_16 has 768 features)
+    # replace head (vit_l_16 has 1024 features)
     model.heads = nn.Sequential(
         nn.Dropout(0.5),
-        nn.Linear(768, 256),
+        nn.Linear(1024, 256),
         nn.ReLU(inplace=True),
         nn.Dropout(0.3),
         nn.Linear(256, NUM_CLASSES),
