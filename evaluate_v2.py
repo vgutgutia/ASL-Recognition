@@ -1,17 +1,17 @@
-# evaluate_v2.py - evaluate the pretrained ResNet18 model on test data
+# evaluate_v2.py - evaluate with hand detection preprocessing
+# uses MediaPipe to find and crop the hand, then classifies the crop
 # usage: python3 evaluate_v2.py <path_to_test_folder>
 
 import sys
 import os
+import cv2
 import torch
 import torch.nn as nn
-from torchvision import datasets, transforms, models
-from torch.utils.data import DataLoader
-from sklearn.metrics import f1_score, classification_report, confusion_matrix
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+from torchvision import transforms, models
+from sklearn.metrics import f1_score, classification_report
+from PIL import Image
+import mediapipe as mp
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "asl_model_best.pth")
 DEVICE = (
@@ -20,8 +20,6 @@ DEVICE = (
     else "cpu"
 )
 
-
-NUM_CLASSES = 5
 
 def build_model(num_classes=5):
     model = models.resnet18(weights=None)
@@ -33,6 +31,45 @@ def build_model(num_classes=5):
         nn.Linear(128, num_classes),
     )
     return model
+
+
+def detect_hand_crop(img_bgr, hands_detector, padding=0.3):
+    """use mediapipe to find the hand and return a cropped image"""
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    h, w = img_bgr.shape[:2]
+    results = hands_detector.process(img_rgb)
+
+    if results.multi_hand_landmarks:
+        # get bounding box from landmarks
+        hand = results.multi_hand_landmarks[0]
+        xs = [lm.x for lm in hand.landmark]
+        ys = [lm.y for lm in hand.landmark]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+
+        # add padding
+        bw = x_max - x_min
+        bh = y_max - y_min
+        x_min = max(0, x_min - bw * padding)
+        x_max = min(1, x_max + bw * padding)
+        y_min = max(0, y_min - bh * padding)
+        y_max = min(1, y_max + bh * padding)
+
+        # make it square
+        cx = (x_min + x_max) / 2
+        cy = (y_min + y_max) / 2
+        side = max(x_max - x_min, y_max - y_min)
+        x_min = max(0, cx - side / 2)
+        x_max = min(1, cx + side / 2)
+        y_min = max(0, cy - side / 2)
+        y_max = min(1, cy + side / 2)
+
+        crop = img_rgb[int(y_min * h):int(y_max * h), int(x_min * w):int(x_max * w)]
+        if crop.size > 0:
+            return Image.fromarray(crop)
+
+    # fallback: return full image
+    return Image.fromarray(img_rgb)
 
 
 def main():
@@ -56,48 +93,92 @@ def main():
     print(f"Model: ResNet18, {checkpoint['total_params']:,} params, train F1={checkpoint['best_f1']:.4f}")
     print(f"Device: {DEVICE}, img size: {img_size}x{img_size}")
 
-    # multi-crop TTA transforms
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    tta_transforms = [
-        # original resize
-        transforms.Compose([transforms.Resize((img_size, img_size)), transforms.ToTensor(), normalize]),
-        # center crop
-        transforms.Compose([transforms.Resize((256, 256)), transforms.CenterCrop(img_size), transforms.ToTensor(), normalize]),
-        # 5-crop at different positions
-        transforms.Compose([transforms.Resize((280, 280)), transforms.CenterCrop(img_size), transforms.ToTensor(), normalize]),
-        # slightly zoomed out
-        transforms.Compose([transforms.Resize((200, 200)), transforms.Pad((12, 12, 12, 12)), transforms.ToTensor(), normalize]),
-    ]
+    to_tensor = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        normalize,
+    ])
 
-    test_dataset = datasets.ImageFolder(test_dir)
-    print(f"Test images: {len(test_dataset)}, classes: {test_dataset.classes}")
+    # init mediapipe hand detector
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(
+        static_image_mode=True,
+        max_num_hands=1,
+        min_detection_confidence=0.3,  # low threshold to catch more hands
+    )
 
     all_preds = []
     all_labels = []
     correct = 0
     total = 0
+    detected = 0
 
-    with torch.no_grad():
-        for img, label in test_dataset:
-            probs_sum = torch.zeros(NUM_CLASSES).to(DEVICE)
-            for t in tta_transforms:
-                tensor = t(img).unsqueeze(0).to(DEVICE)
-                probs_sum += torch.softmax(model(tensor), dim=1).squeeze()
-                # also flip each
-                probs_sum += torch.softmax(model(torch.flip(tensor, dims=[3])), dim=1).squeeze()
-            pred = probs_sum.argmax().item()
+    # walk through test folders
+    class_dirs = sorted([d for d in os.listdir(test_dir) if os.path.isdir(os.path.join(test_dir, d))])
+    label_map = {name: i for i, name in enumerate(class_dirs)}
+
+    for class_name in class_dirs:
+        class_dir = os.path.join(test_dir, class_name)
+        label = label_map[class_name]
+
+        for fname in sorted(os.listdir(class_dir)):
+            fpath = os.path.join(class_dir, fname)
+            img_bgr = cv2.imread(fpath)
+            if img_bgr is None:
+                continue
+
+            # detect and crop hand
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            results = hands.process(img_rgb)
+            hand_found = results.multi_hand_landmarks is not None
+
+            if hand_found:
+                detected += 1
+                crop = detect_hand_crop(img_bgr, hands, padding=0.3)
+            else:
+                crop = Image.fromarray(img_rgb)
+
+            # TTA: original + flipped, and if no hand detected also try center crop
+            tensor = to_tensor(crop).unsqueeze(0).to(DEVICE)
+            flipped = torch.flip(tensor, dims=[3])
+
+            with torch.no_grad():
+                probs = torch.softmax(model(tensor), dim=1)
+                probs += torch.softmax(model(flipped), dim=1)
+
+                if not hand_found:
+                    # try center crop too since hand might be in the middle
+                    center_t = transforms.Compose([
+                        transforms.Resize((280, 280)),
+                        transforms.CenterCrop(img_size),
+                        transforms.ToTensor(),
+                        normalize,
+                    ])
+                    center = center_t(crop).unsqueeze(0).to(DEVICE)
+                    probs += torch.softmax(model(center), dim=1)
+                    probs += torch.softmax(model(torch.flip(center, dims=[3])), dim=1)
+
+            pred = probs.squeeze().argmax().item()
             if pred == label:
                 correct += 1
             total += 1
             all_preds.append(pred)
             all_labels.append(label)
 
+            status = "OK" if pred == label else "WRONG"
+            pred_name = class_dirs[pred]
+            print(f"  {class_name}/{fname}: pred={pred_name} {'(hand found)' if hand_found else '(no hand)'} {status}")
+
+    hands.close()
+
     accuracy = correct / total
     f1 = f1_score(all_labels, all_preds, average="weighted")
     report = classification_report(all_labels, all_preds,
-                                   target_names=test_dataset.classes, zero_division=0)
+                                   target_names=class_dirs, zero_division=0)
 
-    print(f"\nAccuracy: {accuracy:.4f} ({accuracy * 100:.1f}%)")
+    print(f"\nHands detected: {detected}/{total}")
+    print(f"Accuracy: {accuracy:.4f} ({accuracy * 100:.1f}%)")
     print(f"F1 Score: {f1:.4f}")
     print(report)
 
