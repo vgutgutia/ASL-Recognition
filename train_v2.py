@@ -62,9 +62,9 @@ def build_model():
     # pretrained EfficientNet-B3 — much better feature extraction than ResNet18
     model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
 
-    # freeze early layers
+    # freeze only the very early layers
     for name, param in model.named_parameters():
-        if "features.6" not in name and "features.7" not in name and "features.8" not in name and "classifier" not in name:
+        if "features.0" in name or "features.1" in name or "features.2" in name:
             param.requires_grad = False
 
     # replace classifier (efficientnet-b3 has 1536 features)
