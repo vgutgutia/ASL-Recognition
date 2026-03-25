@@ -63,11 +63,7 @@ def build_model():
     # pretrained ResNet18 - already knows edges, textures, shapes, hands
     model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
 
-    # freeze early layers (they detect generic features like edges)
-    # only train later layers that detect high-level patterns
-    for name, param in model.named_parameters():
-        if "layer3" not in name and "layer4" not in name and "fc" not in name:
-            param.requires_grad = False
+    # train all layers - we have enough data now
 
     # replace the final classifier
     model.fc = nn.Sequential(
@@ -160,11 +156,11 @@ def main():
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # different lr for pretrained vs new layers
-    pretrained_params = [p for n, p in model.named_parameters() if p.requires_grad and "fc" not in n]
+    backbone_params = [p for n, p in model.named_parameters() if "fc" not in n]
     fc_params = [p for n, p in model.named_parameters() if "fc" in n]
     optimizer = optim.AdamW([
-        {"params": pretrained_params, "lr": LR * 0.5},
-        {"params": fc_params, "lr": LR * 5},
+        {"params": backbone_params, "lr": LR},
+        {"params": fc_params, "lr": LR * 10},
     ], weight_decay=1e-3)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-7)
