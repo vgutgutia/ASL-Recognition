@@ -1,27 +1,31 @@
-# train_v2.py - fine-tune a pretrained model for ASL recognition
-# uses pretrained ResNet18 which already understands complex scenes
+# train_v2.py - fine-tune ViT for ASL recognition
+# uses background pasting to simulate messy real-world images
 
 import os
 import copy
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split, WeightedRandomSampler
-from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader, random_split, WeightedRandomSampler, Dataset
+from torchvision import datasets, transforms
 from sklearn.metrics import f1_score, classification_report, confusion_matrix
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 from collections import Counter
+import timm
 
 # config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COMBINED_DIR = os.path.join(BASE_DIR, "data", "combined")
 RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
+BG_DIR = os.path.join(BASE_DIR, "data", "backgrounds")
 DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else RAW_DIR
 MODEL_DIR = os.path.join(BASE_DIR, "models")
-IMG_SIZE = 224  # pretrained models expect 224x224
+IMG_SIZE = 224
 BATCH_SIZE = 32
 EPOCHS = 30
 LR = 1e-4
@@ -35,14 +39,42 @@ DEVICE = (
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# moderate augmentation
+
+class PasteOnBackground:
+    """paste hand crop onto a random background at random position/scale"""
+    def __init__(self, bg_dir, prob=0.4):
+        self.bg_paths = []
+        if os.path.isdir(bg_dir):
+            self.bg_paths = [os.path.join(bg_dir, f) for f in os.listdir(bg_dir)
+                             if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
+        self.prob = prob
+
+    def __call__(self, img):
+        if random.random() > self.prob or not self.bg_paths:
+            return img
+        try:
+            bg = Image.open(random.choice(self.bg_paths)).convert("RGB").resize((448, 448))
+            scale = random.uniform(0.2, 0.7)
+            hand_size = int(448 * scale)
+            hand_resized = img.resize((hand_size, hand_size))
+            max_x = max(0, 448 - hand_size)
+            max_y = max(0, 448 - hand_size)
+            x = random.randint(0, max_x)
+            y = random.randint(0, max_y)
+            bg.paste(hand_resized, (x, y))
+            return bg
+        except Exception:
+            return img
+
+
+# NO horizontal flip - flipping changes ASL letter meaning
 train_transform = transforms.Compose([
+    PasteOnBackground(BG_DIR, prob=0.4),
     transforms.Resize((256, 256)),
     transforms.RandomCrop(IMG_SIZE),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(30),
+    transforms.RandomRotation(25),
     transforms.ColorJitter(brightness=0.6, contrast=0.6, saturation=0.5, hue=0.15),
-    transforms.RandomAffine(degrees=0, translate=(0.2, 0.2), scale=(0.6, 1.4)),
+    transforms.RandomAffine(degrees=10, translate=(0.2, 0.2), scale=(0.6, 1.3)),
     transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
     transforms.RandomGrayscale(p=0.15),
     transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
@@ -59,22 +91,16 @@ val_transform = transforms.Compose([
 
 
 def build_model():
-    # pretrained EfficientNet-B3 — much better feature extraction than ResNet18
-    model = models.efficientnet_b3(weights=models.EfficientNet_B3_Weights.IMAGENET1K_V1)
-
-    # freeze only the very early layers
+    # ViT-Small - self-attention can focus on the hand in cluttered images
+    model = timm.create_model('vit_small_patch16_224', pretrained=True, num_classes=NUM_CLASSES)
+    # freeze early blocks, train last 4 + head
     for name, param in model.named_parameters():
-        if "features.0" in name or "features.1" in name or "features.2" in name:
+        if "blocks." in name:
+            block_num = int(name.split("blocks.")[1].split(".")[0])
+            if block_num < 8:  # freeze blocks 0-7, train 8-11
+                param.requires_grad = False
+        elif "patch_embed" in name or "cls_token" in name or "pos_embed" in name:
             param.requires_grad = False
-
-    # replace classifier (efficientnet-b3 has 1536 features)
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(1536, 256),
-        nn.ReLU(inplace=True),
-        nn.Dropout(0.3),
-        nn.Linear(256, NUM_CLASSES),
-    )
     return model
 
 
@@ -121,14 +147,12 @@ def validate(model, loader, class_names=None):
 def main():
     print(f"Training on {DEVICE}, img_size={IMG_SIZE}, batch={BATCH_SIZE}, lr={LR}")
     print(f"Data: {DATA_DIR}")
-    print(f"Model: ResNet18 pretrained, fine-tuning layer3 + layer4 + fc")
+    print(f"Model: ViT-Small (timm), fine-tuning blocks 8-11 + head")
 
-    # load dataset
     full_dataset = datasets.ImageFolder(DATA_DIR)
     class_names = full_dataset.classes
     print(f"Classes: {class_names}, Total: {len(full_dataset)} images")
 
-    # 80/20 split
     n_val = int(0.2 * len(full_dataset))
     n_train = len(full_dataset) - n_val
     train_idx, val_idx = random_split(range(len(full_dataset)), [n_train, n_val],
@@ -139,7 +163,6 @@ def main():
     train_subset = torch.utils.data.Subset(train_dataset, train_idx.indices)
     val_subset = torch.utils.data.Subset(val_dataset, val_idx.indices)
 
-    # weighted sampler to balance classes
     train_labels = [full_dataset.targets[i] for i in train_idx.indices]
     class_counts = Counter(train_labels)
     weights = [1.0 / class_counts[label] for label in train_labels]
@@ -149,7 +172,6 @@ def main():
     val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     print(f"Train: {len(train_subset)} | Val: {len(val_subset)}")
 
-    # model
     model = build_model().to(DEVICE)
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -157,12 +179,12 @@ def main():
 
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    # different lr for pretrained vs new layers
-    pretrained_params = [p for n, p in model.named_parameters() if p.requires_grad and "fc" not in n]
-    fc_params = [p for n, p in model.named_parameters() if "fc" in n]
+    # separate lr for pretrained blocks vs head
+    head_params = [p for n, p in model.named_parameters() if "head" in n]
+    backbone_params = [p for n, p in model.named_parameters() if p.requires_grad and "head" not in n]
     optimizer = optim.AdamW([
-        {"params": pretrained_params, "lr": LR * 0.5},
-        {"params": fc_params, "lr": LR * 5},
+        {"params": backbone_params, "lr": LR * 0.5},
+        {"params": head_params, "lr": LR * 5},
     ], weight_decay=1e-3)
 
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-7)
@@ -202,7 +224,6 @@ def main():
             print(f"\n  Early stopping at epoch {epoch}")
             break
 
-    # save
     model_path = os.path.join(MODEL_DIR, "asl_model_best.pth")
     torch.save({
         "model_state_dict": best_state,
@@ -211,11 +232,10 @@ def main():
         "num_classes": NUM_CLASSES,
         "best_f1": best_f1,
         "total_params": total_params,
-        "arch": "resnet18",
+        "arch": "vit_small",
     }, model_path)
     print(f"\n  Saved to {model_path}")
 
-    # final eval
     model.load_state_dict(best_state)
     val_loss, val_acc, val_f1, report, cm = validate(model, val_loader, class_names)
     print(f"\n  Final: acc={val_acc:.4f}, f1={val_f1:.4f}")
@@ -236,20 +256,6 @@ def main():
         ax.set_xlabel("Epoch"); ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(MODEL_DIR, "training_history.png"), dpi=150)
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-    ax.set_title("Confusion Matrix")
-    plt.colorbar(im, ax=ax)
-    ax.set_xticks(range(len(class_names))); ax.set_xticklabels(class_names)
-    ax.set_yticks(range(len(class_names))); ax.set_yticklabels(class_names)
-    for i in range(len(class_names)):
-        for j in range(len(class_names)):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center",
-                    color="white" if cm[i, j] > cm.max() / 2 else "black")
-    ax.set_ylabel("True"); ax.set_xlabel("Predicted")
-    plt.tight_layout()
-    plt.savefig(os.path.join(MODEL_DIR, "confusion_matrix.png"), dpi=150)
     print("  Saved plots")
 
 
