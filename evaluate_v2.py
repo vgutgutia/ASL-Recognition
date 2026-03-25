@@ -17,10 +17,10 @@ DEVICE = (
 
 
 def build_model(num_classes=5):
-    model = models.vit_l_16(weights=None)
+    model = models.vit_b_16(weights=None)
     model.heads = nn.Sequential(
         nn.Dropout(0.5),
-        nn.Linear(1024, 256),
+        nn.Linear(768, 256),
         nn.ReLU(inplace=True),
         nn.Dropout(0.3),
         nn.Linear(256, num_classes),
@@ -42,7 +42,7 @@ def main():
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    print(f"Model: ViT-L/16, train F1={checkpoint['best_f1']:.4f}")
+    print(f"Model: ViT-B/16, train F1={checkpoint['best_f1']:.4f}")
 
     test_transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
