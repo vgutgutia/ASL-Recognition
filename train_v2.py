@@ -27,9 +27,9 @@ DATA_DIR = COMBINED_DIR if os.path.isdir(COMBINED_DIR) else RAW_DIR
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 IMG_SIZE = 224
 BATCH_SIZE = 32
-EPOCHS = 30
-LR = 1e-4
-PATIENCE = 10
+EPOCHS = 50
+LR = 5e-5
+PATIENCE = 15
 NUM_CLASSES = 5
 DEVICE = (
     "cuda" if torch.cuda.is_available()
@@ -93,11 +93,11 @@ val_transform = transforms.Compose([
 def build_model():
     # ViT-B/16 - best balance of size and performance
     model = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
-    # freeze early encoder blocks, train last 4 + head
+    # freeze only first 4 encoder blocks, train blocks 4-11 + head
     for name, param in model.named_parameters():
         if "encoder.layers.encoder_layer_" in name:
             block_num = int(name.split("encoder_layer_")[1].split(".")[0])
-            if block_num < 8:
+            if block_num < 4:
                 param.requires_grad = False
         elif "conv_proj" in name or "class_token" in name or "encoder.pos_embedding" in name:
             param.requires_grad = False
