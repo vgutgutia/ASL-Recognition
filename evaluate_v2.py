@@ -44,13 +44,15 @@ def main():
 
     print(f"Model: ViT-B/16, train F1={checkpoint['best_f1']:.4f}")
 
-    test_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
-    test_dataset = datasets.ImageFolder(test_dir, transform=test_transform)
+    # multi-scale TTA at 224 and 256
+    tta_transforms = [
+        transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), normalize]),
+        transforms.Compose([transforms.Resize((256, 256)), transforms.CenterCrop(224), transforms.ToTensor(), normalize]),
+    ]
+
+    test_dataset = datasets.ImageFolder(test_dir)
     print(f"Test images: {len(test_dataset)}")
 
     all_preds = []
@@ -60,9 +62,11 @@ def main():
 
     with torch.no_grad():
         for img, label in test_dataset:
-            tensor = img.unsqueeze(0).to(DEVICE)
-            probs = torch.softmax(model(tensor), dim=1)
-            pred = probs.squeeze().argmax().item()
+            probs = torch.zeros(len(class_names)).to(DEVICE)
+            for t in tta_transforms:
+                tensor = t(img).unsqueeze(0).to(DEVICE)
+                probs += torch.softmax(model(tensor), dim=1).squeeze()
+            pred = probs.argmax().item()
             if pred == label:
                 correct += 1
             total += 1
