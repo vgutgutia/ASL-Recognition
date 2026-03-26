@@ -48,8 +48,8 @@ def main():
 
     # multi-scale TTA at 224 and 256
     tta_transforms = [
-        transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), normalize]),
-        transforms.Compose([transforms.Resize((256, 256)), transforms.CenterCrop(224), transforms.ToTensor(), normalize]),
+        transforms.Compose([transforms.Resize((228, 228)), transforms.CenterCrop(224), transforms.ToTensor(), normalize]),
+        transforms.Compose([transforms.Resize((252, 252)), transforms.CenterCrop(224), transforms.ToTensor(), normalize]),
     ]
 
     test_dataset = datasets.ImageFolder(test_dir)
